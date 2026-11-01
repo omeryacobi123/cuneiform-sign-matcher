@@ -26,6 +26,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: tools/requirements-ai.txt
       - run: pip install -r tools/requirements-ai.txt
       - run: python tools/build_ai_assets.py
       - uses: actions/configure-pages@v5
