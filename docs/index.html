@@ -5,10 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cuneiform Sign Matcher</title>
 <!--
-  Single self-contained page. No build step, no network. Works opened directly (file://)
-  and served (GitHub Pages). Reference signs are vector outlines extracted from the Noto
-  Sans Cuneiform font (js/signs-data.js), each with its Unicode-derived sign name. Matching
-  is geometric: drawing and sign become normalized point clouds compared by chamfer distance.
+  Static GitHub Pages prototype. Reference signs are vector outlines extracted from period
+  fonts. Drawn signs are embedded by a browser AI model and cosine-ranked against an index
+  generated in GitHub Actions. The original geometric matcher is no longer used.
 -->
 <style>
   :root{--bg:#f4f1ea;--ink:#2b2320;--accent:#8a6d3b;--accentd:#6b5324;--panel:#fffdf8;--line:#d8cfbe;--card:#ffffff;--muted:#8b8272;}
@@ -19,7 +18,7 @@
   h1{margin:0;font-size:1.45rem}
   .sub{margin:4px 0 0;color:var(--muted)}
   .tag{display:inline-block;margin-left:8px;padding:1px 8px;font-size:.72rem;border:1px solid var(--line);border-radius:10px;color:var(--accentd);background:var(--card)}
-  main{display:grid;grid-template-columns:minmax(300px,calc(var(--padmax,440px) + 30px)) 1fr;gap:18px;padding:12px 22px 22px;align-items:start}
+  main{display:grid;grid-template-columns:minmax(340px,calc(var(--padmax,580px) + 30px)) 1fr;gap:18px;padding:12px 22px 22px;align-items:start}
   @media(max-width:820px){main{grid-template-columns:1fr}}
   .pane{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
   .toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
@@ -36,7 +35,7 @@
   .wedge{font-size:.95rem;line-height:1;padding:6px 11px}
   .primary{background:var(--accent);color:#fff;border-color:var(--accentd);font-weight:600}
   .primary:hover{background:var(--accentd)}
-  #pad{display:block;width:100%;max-width:var(--padmax,440px);aspect-ratio:1/1;background:var(--panel);border:2px dashed var(--line);border-radius:10px;touch-action:none;cursor:crosshair;margin-top:8px}
+  #pad{display:block;width:100%;max-width:var(--padmax,580px);aspect-ratio:1/1;background:var(--panel);border:2px dashed var(--line);border-radius:10px;touch-action:none;cursor:crosshair;margin-top:8px}
   .actions{display:flex;align-items:center;gap:12px;margin-top:10px}
   .status{color:var(--muted);font-size:.85rem}
   h2{margin:0 0 4px;font-size:1.05rem}
@@ -143,9 +142,9 @@
 <body>
 <header>
   <div>
-    <h1>Cuneiform Sign Matcher</h1>
-    <p class="sub">Draw a sign, or build it from wedges, and search the sign list by shape.
-      <span class="tag">prototype</span></p>
+    <h1>Cuneiform AI Sign Matcher</h1>
+    <p class="sub">Draw a sign and retrieve candidates with a browser AI embedding model.
+      <span class="tag">untrained AI prototype</span></p>
   </div>
   <button id="darkToggle" title="Toggle dark mode">🌙 Dark</button>
 </header>
@@ -204,12 +203,12 @@
       <label class="pl" title="Make the drawing canvas bigger or smaller">canvas
         <select id="padSize">
           <option value="360">small</option>
-          <option value="440" selected>medium</option>
-          <option value="580">large</option>
+          <option value="440">medium</option>
+          <option value="580" selected>large</option>
           <option value="760">x-large</option>
         </select></label>
     </div>
-    <canvas id="pad" width="440" height="440" aria-label="Drawing canvas"></canvas>
+    <canvas id="pad" width="580" height="580" aria-label="Drawing canvas"></canvas>
     <div class="actions">
       <button id="search" class="primary">🔍 Search</button>
       <span id="status" class="status">Loading signs…</span>
@@ -238,7 +237,9 @@
     <div class="period">
       <label for="topn">Show:</label>
       <select id="topn">
-        <option value="24" selected>24</option>
+        <option value="5" selected>5</option>
+        <option value="10">10</option>
+        <option value="24">24</option>
         <option value="48">48</option>
         <option value="100">100</option>
         <option value="250">250</option>
@@ -255,7 +256,7 @@
       </select>
       <span class="note">basal = single signs · compound = built from others (×, +, ., &amp;)</span>
     </div>
-    <p class="hint">Ranked by shape similarity. Click a candidate to enlarge it — meanings, eBL links, and add to canvas or the sentence.</p>
+    <p class="hint">Ranked by an untrained MobileNetV3 embedding prototype. Scores are similarities, not scholarly confidence. Click a candidate for eBL details.</p>
     <div id="results" class="results"></div>
   </section>
 </main>
@@ -274,6 +275,8 @@
 
 <script src="js/signs-data.js"></script>
 <script src="js/words-data.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+<script src="js/ai-matcher.js"></script>
 <script>
 "use strict";
 (function(){
@@ -283,34 +286,7 @@
   var THEME={paper:"#fffef9", ink:"#1a1410", accent:"#8a6d3b"};
   var WORDS=window.WORDS||{};   // lemmaId -> English guide-word (meaning), for search & glosses
 
-  // ---- geometry: normalize polylines to a unit box, densify to a point cloud ----
-  // Accepts either raw point arrays (reference contours) or {pts:[...]} stroke objects.
-  function pointCloud(polys, step){
-    step=step||0.03;
-    var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9,i,j,pl,p;
-    for(i=0;i<polys.length;i++){pl=polys[i].pts||polys[i];for(j=0;j<pl.length;j++){p=pl[j];
-      if(p[0]<minX)minX=p[0];if(p[0]>maxX)maxX=p[0];if(p[1]<minY)minY=p[1];if(p[1]>maxY)maxY=p[1];}}
-    var w=maxX-minX,h=maxY-minY,s=1/(Math.max(w,h)||1),ox=(1-w*s)/2,oy=(1-h*s)/2,out=[];
-    for(i=0;i<polys.length;i++){pl=polys[i].pts||polys[i];
-      var t=[];for(j=0;j<pl.length;j++)t.push([(pl[j][0]-minX)*s+ox,(pl[j][1]-minY)*s+oy]);
-      for(j=0;j<t.length-1;j++){
-        var x1=t[j][0],y1=t[j][1],x2=t[j+1][0],y2=t[j+1][1];
-        var d=Math.hypot(x2-x1,y2-y1),n=Math.max(1,Math.round(d/step));
-        for(var k=0;k<n;k++){var u=k/n;out.push([x1+(x2-x1)*u,y1+(y2-y1)*u]);}
-      }
-      if(t.length)out.push(t[t.length-1]);
-    }
-    return out;
-  }
-  function chamfer(A,B){
-    if(!A.length||!B.length)return 9;
-    var sa=0,sb=0,i,k,m,d;
-    for(i=0;i<A.length;i++){m=1e9;for(k=0;k<B.length;k++){d=(A[i][0]-B[k][0])*(A[i][0]-B[k][0])+(A[i][1]-B[k][1])*(A[i][1]-B[k][1]);if(d<m)m=d;}sa+=Math.sqrt(m);}
-    for(k=0;k<B.length;k++){m=1e9;for(i=0;i<A.length;i++){d=(A[i][0]-B[k][0])*(A[i][0]-B[k][0])+(A[i][1]-B[k][1])*(A[i][1]-B[k][1]);if(d<m)m=d;}sb+=Math.sqrt(m);}
-    return sa/A.length+sb/B.length;
-  }
-
-  // ---- reference set (flip font y-up to screen y-down; precompute cloud + display) ----
+  // ---- reference set (flip font y-up to screen y-down for display) ----------
   // Each period is a separate reference set generated from a period-specific cuneiform font
   // (eBL's fonts). Datasets are lazy-loaded on demand. MZL/ABZ/readings are period-independent
   // and joined from the base (Noto) data by codepoint.
@@ -336,7 +312,7 @@
       var s=arr[i], flipped=[];
       for(var a=0;a<s.g.length;a++){var pl=s.g[a],fp=[];for(var b=0;b<pl.length;b++)fp.push([pl[b][0],-pl[b][1]]);flipped.push(fp);}
       var mt=META[s.cp]||{};
-      out.push({c:s.c,cp:s.cp,name:s.n||"",mzl:mt.m||"",abz:mt.z||"",readings:mt.r||null,ebl:mt.e||"",lg:mt.lg||null,cb:mt.cb||null,period:period||"",compound:isCompound(s.n||"",mt.e||""),polys:flipped,cloud:pointCloud(flipped)});
+      out.push({c:s.c,cp:s.cp,name:s.n||"",mzl:mt.m||"",abz:mt.z||"",readings:mt.r||null,ebl:mt.e||"",lg:mt.lg||null,cb:mt.cb||null,period:period||"",compound:isCompound(s.n||"",mt.e||""),polys:flipped});
     }
     return out;
   }
@@ -531,8 +507,24 @@
     for(var k=0;k<cons.length;k++){var c=cons[k];ctx.moveTo(c[0][0],c[0][1]);for(var j=1;j<c.length;j++)ctx.lineTo(c[j][0],c[j][1]);ctx.closePath();}
     ctx.fill("evenodd");
   }
-  // Flatten strokes into plain polylines for the matcher (wedge stamps carry .contours).
-  function strokePolys(list){var out=[];for(var i=0;i<list.length;i++){var st=list[i];if(st.contours)out=out.concat(st.contours);else out.push(st.pts||st);}return out;}
+  // Render only the user's strokes, centered on white, for the AI model. Photos and UI
+  // colors never leak into the input tensor.
+  function aiInputCanvas(){
+    var out=document.createElement("canvas"),oc=out.getContext("2d"),size=224;
+    out.width=size;out.height=size;oc.fillStyle="#fff";oc.fillRect(0,0,size,size);
+    var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    for(var i=0;i<strokes.length;i++)eachPt(strokes[i],function(p){minX=Math.min(minX,p[0]);minY=Math.min(minY,p[1]);maxX=Math.max(maxX,p[0]);maxY=Math.max(maxY,p[1]);});
+    if(minX>maxX)return out;
+    var scale=180/Math.max(maxX-minX,maxY-minY,1),ox=(size-(maxX-minX)*scale)/2-minX*scale,oy=(size-(maxY-minY)*scale)/2-minY*scale;
+    function pt(p){return [p[0]*scale+ox,p[1]*scale+oy];}
+    oc.fillStyle="#000";oc.strokeStyle="#000";oc.lineCap="round";oc.lineJoin="round";oc.lineWidth=Math.max(3,6*scale);
+    for(i=0;i<strokes.length;i++){
+      var st=strokes[i];
+      if(st.contours){oc.beginPath();for(var c=0;c<st.contours.length;c++){var con=st.contours[c],q=pt(con[0]);oc.moveTo(q[0],q[1]);for(var j=1;j<con.length;j++){q=pt(con[j]);oc.lineTo(q[0],q[1]);}oc.closePath();}oc.fill("evenodd");continue;}
+      var poly=st.pts||st;if(!poly.length)continue;oc.beginPath();q=pt(poly[0]);oc.moveTo(q[0],q[1]);for(j=1;j<poly.length;j++){q=pt(poly[j]);oc.lineTo(q[0],q[1]);}oc.stroke();
+    }
+    return out;
+  }
   function redraw(){
     ctx.fillStyle=THEME.paper;ctx.fillRect(0,0,canvas.width,canvas.height);
     if(photo&&photo.img){
@@ -679,21 +671,28 @@
     return el;
   }
 
-  // ---- shape search (draw -> match by shape) --------------------------------
+  // ---- AI embedding search (draw -> model -> nearest reference vectors) ------
+  var aiSearchToken=0;
   function search(){
     if(txt&&txt.value.trim()){textSearch(txt.value);return;}   // an active text query wins
     if(!REF.length){statusEl.textContent="Still loading…";return;}
     if(!strokes.length){resultsEl.innerHTML="";statusEl.textContent="Draw a sign, or search by name.";return;}
     var isAll=periodSel&&periodSel.value==="All periods";
-    var N=parseInt(topnSel.value,10)||24;
-    var A=pointCloud(strokePolys(strokes));
-    var scored=REF.map(function(r){return {r:r,d:chamfer(A,r.cloud)};});
-    scored.sort(function(a,b){return a.d-b.d;});
-    var seen={},top=[];                       // one card per sign (best-matching form), mode-filtered
-    for(var si=0;si<scored.length&&top.length<N;si++){var r0=scored[si].r;if(!passMode(r0.compound)||seen[r0.cp])continue;seen[r0.cp]=1;top.push(scored[si]);}
-    resultsEl.innerHTML="";
-    for(var i=0;i<top.length;i++)resultsEl.appendChild(makeCard(top[i].r,Math.max(0,1-top[i].d)));
-    statusEl.textContent="Top "+top.length+" signs"+(isAll?" (all periods)":"");
+    var N=parseInt(topnSel.value,10)||5,token=++aiSearchToken,button=document.getElementById("search");
+    button.disabled=true;statusEl.textContent="Loading AI model and ranking signs…";
+    AIMatcher.query(aiInputCanvas(),periodSel.value,Math.max(N*4,24)).then(function(scored){
+      if(token!==aiSearchToken)return;
+      var byKey={};for(var i=0;i<REF.length;i++)byKey[REF[i].period+"|"+REF[i].cp]=REF[i];
+      var top=[];
+      for(i=0;i<scored.length&&top.length<N;i++){var hit=scored[i],r=byKey[hit.period+"|"+hit.cp];if(r&&passMode(r.compound))top.push({r:r,score:hit.score});}
+      resultsEl.innerHTML="";
+      for(i=0;i<top.length;i++)resultsEl.appendChild(makeCard(top[i].r,top[i].score));
+      statusEl.textContent="AI prototype · Top "+top.length+(isAll?" · all periods":"")+" · not yet trained on sketches";
+    }).catch(function(err){
+      if(token!==aiSearchToken)return;
+      resultsEl.innerHTML="";statusEl.textContent="AI assets are not online yet. Run the GitHub build workflow first.";
+      console.error(err);
+    }).finally(function(){if(token===aiSearchToken)button.disabled=false;});
   }
 
   // ---- text search (by sign name or reading, e.g. "gur2") -------------------
