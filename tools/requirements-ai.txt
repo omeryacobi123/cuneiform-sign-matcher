@@ -1,0 +1,5 @@
+numpy==2.2.6
+onnx==1.19.1
+pillow==11.3.0
+torch==2.8.0
+torchvision==0.23.0
