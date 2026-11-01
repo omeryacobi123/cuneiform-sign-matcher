@@ -22,7 +22,8 @@
 
   function tensorFromCanvas(source){
     var size=224,c=document.createElement("canvas"),ctx=c.getContext("2d",{willReadFrequently:true});
-    c.width=size;c.height=size;ctx.fillStyle="#fff";ctx.fillRect(0,0,size,size);ctx.drawImage(source,0,0,size,size);
+    c.width=size;c.height=size;ctx.fillStyle="#fff";ctx.fillRect(0,0,size,size);
+    ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality="high";ctx.drawImage(source,0,0,size,size);
     var pixels=ctx.getImageData(0,0,size,size).data;
     var out=new Float32Array(3*size*size),mean=[0.485,0.456,0.406],std=[0.229,0.224,0.225];
     for(var i=0;i<size*size;i++)for(var ch=0;ch<3;ch++)out[ch*size*size+i]=(pixels[i*4+ch]/255-mean[ch])/std[ch];

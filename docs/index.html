@@ -167,7 +167,7 @@
     <div class="toolbar">
       <span class="grouplabel">Draw</span>
       <button id="t-line" class="active" title="Straight line: press and drag">╱ Line</button>
-      <button id="t-pen" title="Freehand (auto-straightened into segments)">✎ Freehand</button>
+      <button id="t-pen" title="High-resolution freehand with dense pointer sampling, pressure and timing data">✎ Freehand</button>
       <button id="t-box" title="Box: press and drag to draw a rectangle / frame">▭ Box</button>
       <button id="t-select" title="Select a drawn line/wedge, then drag to move it — or use the round handle above it to rotate">◈ Select</button>
       <button id="t-erase" title="Erase: drag to rub out the part of a line/box under the cursor (wedges are removed whole)">🩹 Erase</button>
@@ -207,6 +207,7 @@
           <option value="580" selected>large</option>
           <option value="760">x-large</option>
         </select></label>
+      <span id="resolutionInfo" class="status"></span>
     </div>
     <canvas id="pad" width="580" height="580" aria-label="Drawing canvas"></canvas>
     <div class="actions">
@@ -282,6 +283,7 @@
 (function(){
   var statusEl=document.getElementById("status"), resultsEl=document.getElementById("results");
   var canvas=document.getElementById("pad"), ctx=canvas.getContext("2d");
+  var padLogical=580,padDpr=Math.max(1,Math.min(3,window.devicePixelRatio||1));
   // Canvas colors are drawn in JS, so they follow a theme object (CSS can't reach the canvas).
   var THEME={paper:"#fffef9", ink:"#1a1410", accent:"#8a6d3b"};
   var WORDS=window.WORDS||{};   // lemmaId -> English guide-word (meaning), for search & glosses
@@ -375,7 +377,13 @@
   // strokes: array of {pts:[[x,y],...], kind:null|'vertical'|'horizontal'|'diagonal'|'winkelhaken'}
   var strokes=[], raw=null, mode="line", wedgeKind=null;
   var selIdx=-1, selDrag=null, selHandle=null;   // Select tool: move/rotate a drawn stroke
-  function pos(e){var r=canvas.getBoundingClientRect();return [(e.clientX-r.left)*canvas.width/r.width,(e.clientY-r.top)*canvas.height/r.height];}
+  function pos(e){var r=canvas.getBoundingClientRect();return [(e.clientX-r.left)*padLogical/r.width,(e.clientY-r.top)*padLogical/r.height,e.pressure||0,e.timeStamp||performance.now()];}
+  function appendDensePoint(st,p){
+    var pts=st.pts,last=pts[pts.length-1];if(!last){pts.push(p);return;}
+    var dx=p[0]-last[0],dy=p[1]-last[1],dist=Math.hypot(dx,dy),steps=Math.max(1,Math.ceil(dist/1.25));
+    for(var n=1;n<=steps;n++){var u=n/steps;pts.push([last[0]+dx*u,last[1]+dy*u,last[2]+(p[2]-last[2])*u,last[3]+(p[3]-last[3])*u]);}
+  }
+  function coalesced(e){return e.getCoalescedEvents?e.getCoalescedEvents():[e];}
   // ---- select / move / rotate helpers (operate on a stroke's pts or wedge contours) ----
   function eachPt(st,fn){
     if(st.contours){for(var c=0;c<st.contours.length;c++)for(var j=0;j<st.contours[c].length;j++)fn(st.contours[c][j]);}
@@ -417,8 +425,8 @@
     document.getElementById("photoEdge").classList.toggle("active",photo.edge);
   }
   function resetPhotoAdj(){if(!photo)return;photo.alpha=PHOTO_DEF.alpha;photo.gray=PHOTO_DEF.gray;photo.bright=PHOTO_DEF.bright;photo.contrast=PHOTO_DEF.contrast;photo.invert=false;photo.edge=false;photo.proc=null;syncPhotoControls();redraw();}
-  function fitPhoto(){if(!photo)return;var iw=photo.img.width,ih=photo.img.height,sc=Math.min(canvas.width/iw,canvas.height/ih);photo.scale=sc;photo.x=(canvas.width-iw*sc)/2;photo.y=(canvas.height-ih*sc)/2;redraw();}
-  function zoomPhoto(f,cx,cy){if(!photo)return;if(cx==null){cx=canvas.width/2;cy=canvas.height/2;}var ns=Math.max(0.05,Math.min(40,photo.scale*f)),k=ns/photo.scale;photo.x=cx-(cx-photo.x)*k;photo.y=cy-(cy-photo.y)*k;photo.scale=ns;redraw();}
+  function fitPhoto(){if(!photo)return;var iw=photo.img.width,ih=photo.img.height,sc=Math.min(padLogical/iw,padLogical/ih);photo.scale=sc;photo.x=(padLogical-iw*sc)/2;photo.y=(padLogical-ih*sc)/2;redraw();}
+  function zoomPhoto(f,cx,cy){if(!photo)return;if(cx==null){cx=padLogical/2;cy=padLogical/2;}var ns=Math.max(0.05,Math.min(40,photo.scale*f)),k=ns/photo.scale;photo.x=cx-(cx-photo.x)*k;photo.y=cy-(cy-photo.y)*k;photo.scale=ns;redraw();}
   function photoFilter(){   // ctx.filter string from the adjustment sliders
     if(!photo)return "none";
     var f="brightness("+(photo.bright/100)+") contrast("+(photo.contrast/100)+")";
@@ -440,7 +448,7 @@
   function removePhoto(){photo=null;panning=null;document.getElementById("photoctrls").hidden=true;canvas.classList.remove("panmode");if(mode==="photo")setDraw("line");redraw();statusEl.textContent="Draw a sign, or search by name.";}
   // ---- resize the drawing canvas; scale existing strokes + photo so nothing jumps ----
   function setPadSize(px){
-    px=Math.max(240,Math.min(1200,px|0));var old=canvas.width,ratio=px/old;
+    px=Math.max(240,Math.min(1200,px|0));var old=padLogical,ratio=px/old;
     if(ratio!==1){
       for(var i=0;i<strokes.length;i++){var st=strokes[i];
         if(st.contours){for(var c=0;c<st.contours.length;c++)for(var j=0;j<st.contours[c].length;j++){st.contours[c][j][0]*=ratio;st.contours[c][j][1]*=ratio;}}
@@ -448,7 +456,9 @@
       }
       if(photo){photo.scale*=ratio;photo.x*=ratio;photo.y*=ratio;}
     }
-    canvas.width=px;canvas.height=px;
+    padLogical=px;padDpr=Math.max(1,Math.min(3,window.devicePixelRatio||1));
+    canvas.width=Math.round(px*padDpr);canvas.height=Math.round(px*padDpr);
+    var ri=document.getElementById("resolutionInfo");if(ri)ri.textContent=canvas.width+"×"+canvas.height+" px · dense samples";
     document.documentElement.style.setProperty("--padmax",px+"px");
     try{localStorage.setItem("cm_padsize",String(px));}catch(e){}
     redraw();
@@ -510,14 +520,14 @@
   // Render only the user's strokes, centered on white, for the AI model. Photos and UI
   // colors never leak into the input tensor.
   function aiInputCanvas(){
-    var out=document.createElement("canvas"),oc=out.getContext("2d"),size=224;
+    var out=document.createElement("canvas"),oc=out.getContext("2d"),size=896;
     out.width=size;out.height=size;oc.fillStyle="#fff";oc.fillRect(0,0,size,size);
     var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
     for(var i=0;i<strokes.length;i++)eachPt(strokes[i],function(p){minX=Math.min(minX,p[0]);minY=Math.min(minY,p[1]);maxX=Math.max(maxX,p[0]);maxY=Math.max(maxY,p[1]);});
     if(minX>maxX)return out;
-    var scale=180/Math.max(maxX-minX,maxY-minY,1),ox=(size-(maxX-minX)*scale)/2-minX*scale,oy=(size-(maxY-minY)*scale)/2-minY*scale;
+    var scale=(size*0.80)/Math.max(maxX-minX,maxY-minY,1),ox=(size-(maxX-minX)*scale)/2-minX*scale,oy=(size-(maxY-minY)*scale)/2-minY*scale;
     function pt(p){return [p[0]*scale+ox,p[1]*scale+oy];}
-    oc.fillStyle="#000";oc.strokeStyle="#000";oc.lineCap="round";oc.lineJoin="round";oc.lineWidth=Math.max(3,6*scale);
+    oc.fillStyle="#000";oc.strokeStyle="#000";oc.lineCap="round";oc.lineJoin="round";oc.lineWidth=Math.max(8,6*scale);
     for(i=0;i<strokes.length;i++){
       var st=strokes[i];
       if(st.contours){oc.beginPath();for(var c=0;c<st.contours.length;c++){var con=st.contours[c],q=pt(con[0]);oc.moveTo(q[0],q[1]);for(var j=1;j<con.length;j++){q=pt(con[j]);oc.lineTo(q[0],q[1]);}oc.closePath();}oc.fill("evenodd");continue;}
@@ -526,7 +536,8 @@
     return out;
   }
   function redraw(){
-    ctx.fillStyle=THEME.paper;ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.setTransform(padDpr,0,0,padDpr,0,0);
+    ctx.fillStyle=THEME.paper;ctx.fillRect(0,0,padLogical,padLogical);
     if(photo&&photo.img){
       ctx.save();ctx.globalAlpha=photo.alpha;
       var src=(photo.edge&&photo.proc)?photo.proc:photo.img;
@@ -636,7 +647,8 @@
     if(wedgeDrag){e.preventDefault();var dx=p[0]-wedgeDrag.cx,dy=p[1]-wedgeDrag.cy;if(Math.hypot(dx,dy)>8)wedgeDrag.angle=Math.atan2(dy,dx);previewWedge();return;}
     if(!raw)return;e.preventDefault();
     if(raw.kind==="box"){var x0=raw.o[0],y0=raw.o[1];raw.pts=[[x0,y0],[p[0],y0],[p[0],p[1]],[x0,p[1]],[x0,y0]];redraw();return;}
-    if(mode==="line")raw.pts=[raw.pts[0],p]; else raw.pts.push(p);
+    if(mode==="line")raw.pts=[raw.pts[0],p];
+    else{var events=coalesced(e);for(var ce=0;ce<events.length;ce++)appendDensePoint(raw,pos(events[ce]));}
     redraw();
   });
   canvas.addEventListener("wheel",function(e){if(!photo)return;e.preventDefault();var p=pos(e);zoomPhoto(e.deltaY<0?1.12:1/1.12,p[0],p[1]);},{passive:false});
@@ -646,7 +658,8 @@
     if(erasing){erasing=false;if(txt)txt.value="";search();return;}
     if(wedgeDrag){strokes.push(makeWedgePoly(wedgeKind,wedgeDrag.cx,wedgeDrag.cy,wedgeDrag.angle,wedgeDrag.size));wedgeDrag=null;if(txt)txt.value="";redraw();search();return;}
     if(!raw)return;
-    if(mode==="pen")raw.pts=rdp(raw.pts,4);   // straighten freehand into segments
+    // Preserve every high-resolution sample for future training. Any visual smoothing
+    // must remain non-destructive so pressure and timing data are not lost.
     if(raw.pts.length>=2||strokes.length===0)strokes.push(raw);
     raw=null;if(txt)txt.value="";redraw();search();
   });
@@ -737,7 +750,7 @@
     var mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
     polys.forEach(function(c){c.forEach(function(p){if(p[0]<mnx)mnx=p[0];if(p[0]>mxx)mxx=p[0];if(p[1]<mny)mny=p[1];if(p[1]>mxy)mxy=p[1];});});
     var w=mxx-mnx,h=mxy-mny,sc=200/(Math.max(w,h)||1);
-    var off=((addOffset++%3)-1)*46, cx=canvas.width/2+off, cy=canvas.height/2+off, mx=(mnx+mxx)/2, my=(mny+mxy)/2;
+    var off=((addOffset++%3)-1)*46, cx=padLogical/2+off, cy=padLogical/2+off, mx=(mnx+mxx)/2, my=(mny+mxy)/2;
     var cons=polys.map(function(c){return c.map(function(p){return [cx+(p[0]-mx)*sc, cy+(p[1]-my)*sc];});});
     strokes.push({contours:cons,fill:true});
     if(txt)txt.value="";                       // switch back to shape mode with the sign placed
